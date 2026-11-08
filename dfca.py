@@ -1,34 +1,31 @@
 from graphviz import Digraph
 from revuz import DFA, State
 from pathlib import Path
+from collections import deque
 import os
 
 class TupleState:
-    def __init__(self, id: tuple[int, int], sentinel: "TupleState | None", successors: dict[str, "TupleState"] | None = None):
+    def __init__(self, id: tuple[int, int], sentinel: "TupleState | None", successors: dict[int, "TupleState"] | None = None):
         if successors is None:
             successors = {}
-        for char in successors:
-            assert len(char) == 1
         self.succ = successors
         self.id = id
         # if sentinel is None, then final has to be false, because this state
         #   (self) is the sentinel state (which can never be final)
         self.sentinel = sentinel if sentinel else self
-        self.parents: dict["TupleState", set[str]] = {}
+        self.parents: dict["TupleState", set[int]] = {}
         # a height of -1 means the height of this state is undefined.
         self.height = -1
 
-    def add_succ(self, char: str, succ: "TupleState"):
+    def add_succ(self, char: int, succ: "TupleState"):
         assert char not in self.succ
-        assert len(char) == 1
         self.succ[char] = succ
 
-    def update_succ(self, char: str, succ: "TupleState"):
+    def update_succ(self, char: int, succ: "TupleState"):
         assert char in self.succ
-        assert len(char) == 1
         self.succ[char] = succ
 
-    def add_parent(self, parent: "TupleState", character: str):
+    def add_parent(self, parent: "TupleState", character: int):
         if parent in self.parents:
             self.parents[parent].add(character)
         else:
@@ -37,8 +34,7 @@ class TupleState:
     def set_height(self, height: int):
         self.height = max(self.height, height)
 
-    def next(self, char: str):
-        assert len(char) == 1
+    def next(self, char: int):
         return self.succ.get(char, self.sentinel)
 
     def __repr__(self):
@@ -50,18 +46,144 @@ class TupleState:
 class DFCA:
     def __init__(self):
         self.l = 0
+        self.alphabet: list[int] = []
+        self.initial: State | None = None
+        self.allstates: set[State] = set()
+        self.finalstates: set[State] = set()
+        # mapping from state to the minimal distance to the initial state
+        self.min_dist_to_initial: dict[State, int] = {}
+
+    def from_lang(self, lang: set[tuple[int, ...]]):
+        minimizer = dfcaMinimizer()
+        minimizer.from_lang(lang)
+        minimizer.minimize()
+        self.from_minimizer(minimizer)
+
+    def from_minimizer(self, minimizer: "dfcaMinimizer"):
+        count = 1
+        visited: set[TupleState] = set()
+        sentinel = State(len(minimizer.allstates) - 1, None, False)
+        self.allstates.add(sentinel)
+        queue: deque[TupleState] = deque([minimizer.initial])
+        tuple_state_to_state: dict[TupleState, State] = {minimizer.initial: State(0, sentinel, minimizer.initial in minimizer.finalstates)}
+
+        # translate the tuple-automaton to a normal one
+        while queue:
+            tuplestate = queue.popleft()
+            if tuplestate in visited:
+                continue
+            print(f"visiting state: {tuplestate}")
+            new_state = tuple_state_to_state[tuplestate]
+            self.allstates.add(new_state)
+            for char in minimizer.alphabet:
+                succ = tuplestate.next(char)
+                if succ in minimizer.sentinels:
+                    tuple_state_to_state[succ] = sentinel
+                    continue
+                if succ not in tuple_state_to_state:
+                    new_succ = State(count, sentinel, tuplestate in minimizer.finalstates)
+                    print(f"adding state {new_succ}")
+                    count += 1
+                    tuple_state_to_state[succ] = new_succ
+                else:
+                    new_succ = tuple_state_to_state[succ]
+                new_state.succ[char] = new_succ
+                new_succ.add_parent(new_state, char)
+                queue.append(succ)
+            if tuplestate in minimizer.finalstates:
+                self.finalstates.add(new_state)
+            visited.add(tuplestate)
+
+        self.initial = tuple_state_to_state[minimizer.initial]
+        self.l = minimizer.l
+
+        self.alphabet = minimizer.alphabet
+
+
+        # this is needed to decode this dfca efficiently
+        print(f"visited: {visited}")
+        for tuplestateid in minimizer.state_to_i_in_D:
+            tuplestate = minimizer.tuple_to_state[tuplestateid]
+            if tuplestate not in tuple_state_to_state:
+                print(f"tuplestate {tuplestate} not visited during translation traversal")
+                continue
+            state = tuple_state_to_state[tuplestate]
+            self.min_dist_to_initial[state] = minimizer.state_to_i_in_D[tuplestateid]
+
+    def visualize(self):
+        dot = Digraph()
+        for state in self.allstates:
+            iden = str(state.id)
+            dot.node(iden, iden, peripheries="2" if state in self.finalstates else "1")
+        for state in self.allstates:
+            print(f"successors of {state}: {state.succ}")
+            iden = str(state.id)
+            mapping: dict[State, set[int]] = {}
+            for char in self.alphabet:
+                succ = state.next(char)
+                if succ in mapping:
+                    mapping[succ].add(char)
+                else:
+                    mapping[succ] = set([char])
+            for succ in mapping:
+                dot.edge(str(state.id), str(succ.id), str(",".join(map(str, mapping[succ]))))
+        dot.render(view=True)
+
+    def to_file(self, filename: Path, source: Path | None = None):
+        print(f"saving dfca to files starting with \"{filename}\"")
+        # TODO implement simplification of states (from tuples to numbers)
+        counter = 1
+        with open(filename.with_suffix(".dfca"), "w") as f:
+            transition_func: list[tuple] = []
+            for state in self.allstates:
+                for char in self.alphabet:
+                    next_tuple = state.next(char).id
+                    transition_func.append((state.id, char, next_tuple))
+            f.writelines([
+                "DFCA\n",
+                str(self.l) + "\n",
+                ",".join(map(lambda x: str(x.id), self.allstates)) + "\n",
+                ",".join(map(str, transition_func)) + "\n"])
+        with open(filename.with_suffix(".source"), "w") as f:
+            if source is None:
+                f.writelines(map(lambda x: ",".join(map(str, x)) + "\n", self.decode()))
+            else:
+                print("TODO case when source defined for to_file()")
+
+    def decode(self) -> set[tuple[int, ...]]:
+        res = set()
+        print(f"min_dist_to_initial: {self.min_dist_to_initial}")
+        def traverse(state: State, prefix: tuple[int, ...]):
+            nonlocal res
+            print(f"visiting state {state} with successors {state.succ}")
+            min_dist = self.min_dist_to_initial[state]
+            if min_dist == -1: # we are in a sink state
+                return
+            if min_dist == 0: # we are in a final state
+                res.add(prefix)
+            if len(prefix) > self.l - min_dist or len(prefix) == self.l:
+                return
+            for char in state.succ:
+                next_state = state.succ[char]
+                traverse(next_state, prefix + (char,))
+        assert self.initial is not None
+        traverse(self.initial, ())
+        return res
+
+class dfcaMinimizer:
+    def __init__(self):
+        self.l = 0
         self.n = 0
         self.S = {}
         self.D = []
         self.state_to_i_in_D = {}
-        self.alphabet = set()
+        self.alphabet: list[int] = []
 
-    def from_lang(self, language: set[str]):
+    def from_lang(self, language: set[tuple[int, ...]] | set[str]):
         dfa = DFA()
         self.l = max(map(len, language)) if len(language) > 0 else 0
-        for word in language:
-            self.alphabet.update(word)
         dfa.from_lang(language)
+        self.alphabet = list(dfa.alphabet)
         dfa.revuz()
 
         self.sentinels: list[TupleState] = []
@@ -76,7 +198,6 @@ class DFCA:
         self.finalstates: set[TupleState] = set()
 
         self.n = dfa.sentinel.id + 1
-
 
         def traverse(initial: State, depth = 0) -> TupleState:
             nonlocal dfa, self, minimal_sentinel_touched
@@ -111,9 +232,9 @@ class DFCA:
         if len(language) == 0:
             self.sentinels.append(self.initial)
 
-    def decode(self):
+    def decode(self) -> set[tuple[int, ...]]:
         res = set()
-        def traverse(state: TupleState, prefix: str):
+        def traverse(state: TupleState, prefix: tuple[int, ...]):
             nonlocal res
             min_dist = self.state_to_i_in_D[state.id]
             if min_dist == -1: # we are in a sink state
@@ -124,8 +245,8 @@ class DFCA:
                 return
             for char in state.succ:
                 next_state = state.succ[char]
-                traverse(next_state, prefix + char)
-        traverse(self.initial, "")
+                traverse(next_state, prefix + (char,))
+        traverse(self.initial, ())
         return res
 
 
@@ -136,15 +257,15 @@ class DFCA:
             dot.node(iden, iden, peripheries="2" if state in self.finalstates else "1")
         for state in self.allstates:
             iden = str(state)
-            mapping: dict[TupleState, set[str]] = {}
+            mapping: dict[TupleState, set[int]] = {}
             for char in self.alphabet:
                 succ = state.next(char)
                 if succ in mapping:
                     mapping[succ].add(char)
                 else:
-                    mapping[succ] = set(char)
+                    mapping[succ] = set([char])
             for succ in mapping:
-                dot.edge(str(state), str(succ), str(",".join(mapping[succ])))
+                dot.edge(str(state), str(succ), str(",".join(map(str, mapping[succ]))))
         dot.render(view=True)
 
     def calc_D(self) -> list[set[tuple[int, int]]]:
@@ -282,40 +403,32 @@ class DFCA:
             return (t[1], t[0])
         return list(map(swap, sorted(map(swap, self.tuple_to_state)))) # sort the states in the order definied by the paper
 
-    def to_file(self, filename: Path, source: Path | None = None):
-        print(f"saving dfca to files starting with \"{filename}\"")
-        # TODO implement simplification of states (from tuples to numbers)
-        tuple_to_number = {(0, 0): 0}
-        counter = 1
-        with open(filename.with_suffix(".dfca"), "w") as f:
-            transition_func: list[tuple] = []
-            for state in self.allstates:
-                if state.id not in tuple_to_number:
-                    tuple_to_number[state.id] = counter
-                    counter += 1
-                for char in self.alphabet:
-                    next_tuple = state.next(char).id
-                    if next_tuple not in tuple_to_number:
-                        tuple_to_number[next_tuple] = counter
-                        counter += 1
-                    transition_func.append((tuple_to_number[state.id], char, tuple_to_number[next_tuple]))
-            f.writelines([
-                "DFCA\n",
-                str(self.l) + "\n",
-                ",".join(map(lambda x: str(tuple_to_number[x.id]), self.allstates)) + "\n",
-                ",".join(map(str, transition_func)) + "\n"])
-        with open(filename.with_suffix(".source"), "w") as f:
-            if source is None:
-                f.writelines(map(lambda x: x + "\n", self.decode()))
-            else:
-                print("TODO case when source defined for to_file()")
 
 def less(tup1: tuple[int, int], tup2: tuple[int, int]):
     return tup1[1] <= tup2[1] if tup1[1] != tup2[1] else tup1[0] <= tup2[0]
 
+def int_lang_to_str_lang(lang: set[tuple[int, ...]]):
+    res = set()
+    for w in lang:
+        new_w = ""
+        for char in w:
+            new_w += chr(char)
+        res.add(new_w)
+    return res
+
+def str_lang_to_int_lang(lang: set[str]):
+    res = set()
+    for w in lang:
+        new_w: tuple[int, ...] = ()
+        for char in w:
+            new_w += (ord(char),)
+        res.add(new_w)
+    return res
+
 def randomized(**kwargs):
     output: str | None = kwargs["outputlocation"]
     output_path: Path | None = None
+    visualize: bool = kwargs["visualize"]
     if output:
         if not os.path.isdir(output):
             print("--outputlocation must be a directory if the randomized subcommand is used")
@@ -341,7 +454,7 @@ def randomized(**kwargs):
         # l = {'', 'ab', 'abab', 'ababab', 'ababa'}
         print("=== Case begin ===")
         print(f"language: {l}")
-        res = run_algos(l, output_path / f"rand_test_{i}" if output_path else None)
+        res = run_algos(l, output_path / f"rand_test_{i}" if output_path else None, visualize=visualize)
         if res:
             states_prefixtree, states_dfa, states_dfca = res
             num_states_prefixtree += states_prefixtree
@@ -360,24 +473,29 @@ def from_directory(directory: str, **kwargs):
 
 def from_args(arg: list[str], **kwargs):
     output_path: str | None = kwargs["outputlocation"]
-    run_algos(set(arg), Path(output_path) if output_path is not None else None)
+    visualize: bool = kwargs["visualize"]
+    run_algos(set(arg), Path(output_path) if output_path is not None else None, visualize=visualize)
 
-def run_algos(lang: set[str], output_path: Path | None) -> tuple[int, int, int] | None:
+def run_algos(lang: set[str], output_path: Path | None, visualize: bool =False) -> tuple[int, int, int] | None:
     dfa = DFA()
     dfa.from_lang(lang)
     states_prefixtree = len(dfa.allstates)
     dfa.revuz()
     l_revuz = dfa.lang()
     states_dfa = len(dfa.allstates)
+    dfcaMin = dfcaMinimizer()
+    dfcaMin.from_lang(lang)
+    dfcaMin.minimize()
+    dfcaMin.visualize()
     dfca = DFCA()
-    dfca.from_lang(lang)
-    # dfca.visualize()
-    dfca.minimize()
+    dfca.from_minimizer(dfcaMin)
+    dfca.visualize()
     l_revuz = dfa.lang()
     states_dfca = len(dfca.allstates)
     l_dfca = frozenset(dfca.decode())
-    if l_dfca != frozenset(lang) or l_revuz != frozenset(lang):
-        print(f"error: decoding the dfca of language l = {lang} did not result in l")
+    expected = frozenset(str_lang_to_int_lang(lang))
+    if l_dfca != expected or l_revuz != expected:
+        print(f"error: decoding the dfca of language l = {lang} did not result in l, resulted in {l_dfca}")
         return None
 
     if output_path:
@@ -385,14 +503,18 @@ def run_algos(lang: set[str], output_path: Path | None) -> tuple[int, int, int] 
 
     if states_dfca > states_dfa:
         dfa.visualize()
+        dfcaMin.visualize()
         dfca.visualize()
         dfca.to_file(Path("suspicious.dfca"))
         input("For the visualized DF(C)As, the minimal DFA is smaller than the corresponding \"minimal\" DFCA..")
+    elif visualize:
+        dfa.visualize()
+        dfca.visualize()
     return states_prefixtree, states_dfa, states_dfca
 
 
 def main():
-    from argparse import ArgumentParser
+    from argparse import ArgumentParser, BooleanOptionalAction
     parser = ArgumentParser()
     subparsers = parser.add_subparsers(required=True)
     parser_random = subparsers.add_parser("randomized")
@@ -404,6 +526,7 @@ def main():
     parser_arg.add_argument("arg", nargs="*")
     parser_arg.set_defaults(func=from_args)
     parser.add_argument("-o", "--outputlocation", type=str)
+    parser.add_argument("-v", "--visualize", action=BooleanOptionalAction, default=False)
     args = parser.parse_args()
     args.func(**vars(args))
 

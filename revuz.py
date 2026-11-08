@@ -1,42 +1,41 @@
 from graphviz import Digraph
+from typing import cast
 
 # example from the paper revuz.pdf
 input_words = {"aa", "aaa", "aaba", "aabbb", "abaa", "ababb", "abbab", "baa", "babb", "abaa", "bbbab", "caaad", "caac", "cbaad", "cbac", "ebb"}
 
 class State:
-    def __init__(self, id: int, sentinel: "State | None", final: bool, successors: dict[str, "State"] | None = None):
+    def __init__(self, id: int, sentinel: "State | None", final: bool, successors: dict[int, "State"] | None = None):
         if successors is None:
             successors = {}
-        for char in successors:
-            assert len(char) == 1
         self.succ = successors
         self.id = id
         # if sentinel is None, then final has to be false, because this state
         #   (self) is the sentinel state (which can never be final)
         assert not final or sentinel
         self.sentinel = sentinel if sentinel else self
-        self.parents: dict["State", str] = {} # TODO this should be a mapping from State to a (set of) character.
+        self.parents: dict["State", set[int]] = {} # TODO this should be a mapping from State to a (set of) character.
         # a height of -1 means the height of this state is undefined.
         self.height = -1
 
-    def add_succ(self, char: str, succ: "State"):
+    def add_succ(self, char: int, succ: "State"):
         assert char not in self.succ
-        assert len(char) == 1
         self.succ[char] = succ
 
-    def update_succ(self, char: str, succ: "State"):
+    def update_succ(self, char: int, succ: "State"):
         assert char in self.succ
-        assert len(char) == 1
         self.succ[char] = succ
 
-    def add_parent(self, parent: "State", character: str):
-        self.parents[parent] = character
+    def add_parent(self, parent: "State", character: int):
+        if parent in self.parents:
+            self.parents[parent].add(character)
+        else:
+            self.parents[parent] = set([character])
 
     def set_height(self, height: int):
         self.height = max(self.height, height)
 
-    def next(self, char: str):
-        assert len(char) == 1
+    def next(self, char: int):
         return self.succ.get(char, self.sentinel)
 
     def __repr__(self):
@@ -48,10 +47,15 @@ class DFA:
         self.initial = State(0, self.sentinel, False)
         self.allstates = {self.sentinel, self.initial}
         self.finalstates: set["State"] = set()
-        self.alphabet: set[str] = set()
+        self.alphabet: set[int] = set()
 
-    def from_lang(self, language: set[str]):
+    def from_lang(self, language: set[tuple[int, ...]] | set[str]):
         """generates the prefix-tree of a given language"""
+        if isinstance(next(iter(language)), str):
+            language = cast(set[str], language)
+            old_lang: set[str] = language
+            language = set([tuple(map(ord, w)) for w in old_lang])
+        language = cast(set[tuple[int, ...]], language)
         for w in language:
             curr = self.initial
             for i in range(len(w)):
@@ -104,18 +108,18 @@ class DFA:
         for state in self.allstates:
             iden = str(state.id)
             for char in state.succ:
-                dot.edge(iden, str(state.succ[char].id), char)
+                dot.edge(iden, str(state.succ[char].id), str(char))
         dot.render(view=True)
 
-    def lang(self, initial: State | None = None, prefix: str = "") -> set[str]:
+    def lang(self, initial: State | None = None, prefix: tuple[int, ...] = ()) -> set[tuple[int, ...]]:
         # NOTE: if there is a cycle in the dfa, this function does not terminate
         if initial is None:
             initial = self.initial
-        res: set[str] = set()
+        res: set[tuple[int, ...]] = set()
         if initial in self.finalstates:
             res.add(prefix)
         for char in initial.succ:
-            s = self.lang(initial.succ[char], prefix + char)
+            s = self.lang(initial.succ[char], prefix + (char,))
             res.update(s)
         return res
 
@@ -137,7 +141,8 @@ class DFA:
             succ = b.succ[k]
             succ.add_parent(a, k)
         for parent in b.parents:
-            parent.update_succ(b.parents[parent], a)
+            for char in b.parents[parent]:
+                parent.update_succ(char, a)
         self.finalstates.discard(b)
         self.allstates.remove(b)
 
