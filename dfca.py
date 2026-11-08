@@ -1,5 +1,7 @@
 from graphviz import Digraph
 from revuz import DFA, State
+from pathlib import Path
+import os
 
 class TupleState:
     def __init__(self, id: tuple[int, int], sentinel: "TupleState | None", successors: dict[str, "TupleState"] | None = None):
@@ -69,7 +71,7 @@ class DFCA:
         # therefore self.sentinels[i] corresponds to the state (s, i + 1)
         minimal_sentinel_touched = len(self.sentinels) - 1
         self.initial = TupleState((0,0), self.sentinels[0], {})
-        self.allstates = set([self.initial] + self.sentinels)
+        self.allstates: set[TupleState] = set([self.initial] + self.sentinels)
         self.tuple_to_state = {s.id: s for s in self.allstates}
         self.finalstates: set[TupleState] = set()
 
@@ -280,10 +282,45 @@ class DFCA:
             return (t[1], t[0])
         return list(map(swap, sorted(map(swap, self.tuple_to_state)))) # sort the states in the order definied by the paper
 
+    def to_file(self, filename: Path, source: Path | None = None):
+        print(f"saving dfca to files starting with \"{filename}\"")
+        # TODO implement simplification of states (from tuples to numbers)
+        tuple_to_number = {(0, 0): 0}
+        counter = 1
+        with open(filename.with_suffix(".dfca"), "w") as f:
+            transition_func: list[tuple] = []
+            for state in self.allstates:
+                if state.id not in tuple_to_number:
+                    tuple_to_number[state.id] = counter
+                    counter += 1
+                for char in self.alphabet:
+                    next_tuple = state.next(char).id
+                    if next_tuple not in tuple_to_number:
+                        tuple_to_number[next_tuple] = counter
+                        counter += 1
+                    transition_func.append((tuple_to_number[state.id], char, tuple_to_number[next_tuple]))
+            f.writelines([
+                "DFCA\n",
+                str(self.l) + "\n",
+                ",".join(map(lambda x: str(tuple_to_number[x.id]), self.allstates)) + "\n",
+                ",".join(map(str, transition_func)) + "\n"])
+        with open(filename.with_suffix(".source"), "w") as f:
+            if source is None:
+                f.writelines(map(lambda x: x + "\n", self.decode()))
+            else:
+                print("TODO case when source defined for to_file()")
+
 def less(tup1: tuple[int, int], tup2: tuple[int, int]):
     return tup1[1] <= tup2[1] if tup1[1] != tup2[1] else tup1[0] <= tup2[0]
 
-def main():
+def randomized(**kwargs):
+    output: str | None = kwargs["outputlocation"]
+    output_path: Path | None = None
+    if output:
+        if not os.path.isdir(output):
+            print("--outputlocation must be a directory if the randomized subcommand is used")
+            exit(1)
+        output_path = Path(output)
     import random
     random.seed(42)
     alphabet = "ab"
@@ -291,7 +328,7 @@ def main():
     num_states_dfca = 0
     num_states_prefixtree = 0
     num_langs = 0
-    for _ in range(100):
+    for i in range(100):
         l = set()
         for _ in range(random.randint(50, 100)):
             wordlen = random.randint(5, 10)
@@ -304,35 +341,71 @@ def main():
         # l = {'', 'ab', 'abab', 'ababab', 'ababa'}
         print("=== Case begin ===")
         print(f"language: {l}")
-        dfa = DFA()
-        dfa.from_lang(l)
-        num_states_prefixtree += len(dfa.allstates)
-        dfa.revuz()
-        l_revuz = dfa.lang()
-        states_dfa = len(dfa.allstates)
-        num_states_dfa += states_dfa
-        dfca = DFCA()
-        dfca.from_lang(l)
-        # dfca.visualize()
-        dfca.minimize()
-        l_revuz = dfa.lang()
-        states_dfca = len(dfca.allstates)
-        num_states_dfca += states_dfca
-        num_langs += 1
-        l_dfca = frozenset(dfca.decode())
-        if l_dfca != frozenset(l) or l_revuz != frozenset(l):
-            print(f"error: decoding the dfca of language l = {l} did not result in l")
-            return
+        res = run_algos(l, output_path / f"rand_test_{i}" if output_path else None)
+        if res:
+            states_prefixtree, states_dfa, states_dfca = res
+            num_states_prefixtree += states_prefixtree
+            num_states_dfa += states_dfa
+            num_states_dfca += states_dfca
 
-        if states_dfca > states_dfa:
-            dfa.visualize()
-            dfca.visualize()
-            input("For the visualized DF(C)As, the minimal DFA is smaller than the corresponding \"minimal\" DFCA..")
+        num_langs += 1
     print("object      | avg number of states")
     print(f"Prefix-Tree | {num_states_prefixtree/num_langs:3.1f}")
     print(f"min. DFA    | {num_states_dfa/num_langs:3.1f}")
     print(f"min. DFCA   | {num_states_dfca/num_langs:3.1f}")
 
+def from_directory(directory: str, **kwargs):
+    print(f"TODO from_directory({directory, kwargs})")
+    pass
+
+def from_args(arg: list[str], **kwargs):
+    output_path: str | None = kwargs["outputlocation"]
+    run_algos(set(arg), Path(output_path) if output_path is not None else None)
+
+def run_algos(lang: set[str], output_path: Path | None) -> tuple[int, int, int] | None:
+    dfa = DFA()
+    dfa.from_lang(lang)
+    states_prefixtree = len(dfa.allstates)
+    dfa.revuz()
+    l_revuz = dfa.lang()
+    states_dfa = len(dfa.allstates)
+    dfca = DFCA()
+    dfca.from_lang(lang)
+    # dfca.visualize()
+    dfca.minimize()
+    l_revuz = dfa.lang()
+    states_dfca = len(dfca.allstates)
+    l_dfca = frozenset(dfca.decode())
+    if l_dfca != frozenset(lang) or l_revuz != frozenset(lang):
+        print(f"error: decoding the dfca of language l = {lang} did not result in l")
+        return None
+
+    if output_path:
+        dfca.to_file(output_path)
+
+    if states_dfca > states_dfa:
+        dfa.visualize()
+        dfca.visualize()
+        dfca.to_file(Path("suspicious.dfca"))
+        input("For the visualized DF(C)As, the minimal DFA is smaller than the corresponding \"minimal\" DFCA..")
+    return states_prefixtree, states_dfa, states_dfca
+
+
+def main():
+    from argparse import ArgumentParser
+    parser = ArgumentParser()
+    subparsers = parser.add_subparsers(required=True)
+    parser_random = subparsers.add_parser("randomized")
+    parser_dir = subparsers.add_parser("from-directory")
+    parser_arg = subparsers.add_parser("from-arg")
+    parser_random.set_defaults(func=randomized)
+    parser_dir.add_argument("directory", type=str)
+    parser_dir.set_defaults(func=from_directory)
+    parser_arg.add_argument("arg", nargs="*")
+    parser_arg.set_defaults(func=from_args)
+    parser.add_argument("-o", "--outputlocation", type=str)
+    args = parser.parse_args()
+    args.func(**vars(args))
 
 if __name__ == "__main__":
     main()
