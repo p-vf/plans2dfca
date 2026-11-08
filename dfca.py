@@ -50,7 +50,9 @@ class DFCA:
         self.initial: State | None = None
         self.allstates: set[State] = set()
         self.finalstates: set[State] = set()
-        # mapping from state to the minimal distance to the initial state
+
+        # Mapping from state to the minimal distance to the initial state
+        # Required for efficiently decoding the language that this DFCA represents
         self.min_dist_to_initial: dict[State, int] = {}
 
     def from_lang(self, lang: set[tuple[int, ...]]):
@@ -72,7 +74,6 @@ class DFCA:
             tuplestate = queue.popleft()
             if tuplestate in visited:
                 continue
-            print(f"visiting state: {tuplestate}")
             new_state = tuple_state_to_state[tuplestate]
             self.allstates.add(new_state)
             for char in minimizer.alphabet:
@@ -82,7 +83,6 @@ class DFCA:
                     continue
                 if succ not in tuple_state_to_state:
                     new_succ = State(count, sentinel, tuplestate in minimizer.finalstates)
-                    print(f"adding state {new_succ}")
                     count += 1
                     tuple_state_to_state[succ] = new_succ
                 else:
@@ -101,14 +101,11 @@ class DFCA:
 
 
         # this is needed to decode this dfca efficiently
-        print(f"visited: {visited}")
-        for tuplestateid in minimizer.state_to_i_in_D:
-            tuplestate = minimizer.tuple_to_state[tuplestateid]
+        for tuplestate in minimizer.state_to_i_in_D:
             if tuplestate not in tuple_state_to_state:
-                print(f"tuplestate {tuplestate} not visited during translation traversal")
                 continue
             state = tuple_state_to_state[tuplestate]
-            self.min_dist_to_initial[state] = minimizer.state_to_i_in_D[tuplestateid]
+            self.min_dist_to_initial[state] = minimizer.state_to_i_in_D[tuplestate]
 
     def visualize(self):
         dot = Digraph()
@@ -116,7 +113,6 @@ class DFCA:
             iden = str(state.id)
             dot.node(iden, iden, peripheries="2" if state in self.finalstates else "1")
         for state in self.allstates:
-            print(f"successors of {state}: {state.succ}")
             iden = str(state.id)
             mapping: dict[State, set[int]] = {}
             for char in self.alphabet:
@@ -131,8 +127,6 @@ class DFCA:
 
     def to_file(self, filename: Path, source: Path | None = None):
         print(f"saving dfca to files starting with \"{filename}\"")
-        # TODO implement simplification of states (from tuples to numbers)
-        counter = 1
         with open(filename.with_suffix(".dfca"), "w") as f:
             transition_func: list[tuple] = []
             for state in self.allstates:
@@ -152,10 +146,8 @@ class DFCA:
 
     def decode(self) -> set[tuple[int, ...]]:
         res = set()
-        print(f"min_dist_to_initial: {self.min_dist_to_initial}")
         def traverse(state: State, prefix: tuple[int, ...]):
             nonlocal res
-            print(f"visiting state {state} with successors {state.succ}")
             min_dist = self.min_dist_to_initial[state]
             if min_dist == -1: # we are in a sink state
                 return
@@ -236,7 +228,7 @@ class dfcaMinimizer:
         res = set()
         def traverse(state: TupleState, prefix: tuple[int, ...]):
             nonlocal res
-            min_dist = self.state_to_i_in_D[state.id]
+            min_dist = self.state_to_i_in_D[state]
             if min_dist == -1: # we are in a sink state
                 return
             if min_dist == 0: # we are in a final state
@@ -268,7 +260,7 @@ class dfcaMinimizer:
                 dot.edge(str(state), str(succ), str(",".join(map(str, mapping[succ]))))
         dot.render(view=True)
 
-    def calc_D(self) -> list[set[tuple[int, int]]]:
+    def calc_D(self) -> list[set[TupleState]]:
         current_states: set[TupleState] = set(self.finalstates)
         dist_to_final = 0
         self.D = [set() for _ in range(self.l + 2)]
@@ -281,7 +273,7 @@ class dfcaMinimizer:
                     continue
                 visited.add(q)
                 assert dist_to_final <= self.l
-                self.D[dist_to_final + 1].add(q.id) # TODO add bounds check here as assertion
+                self.D[dist_to_final + 1].add(q) # TODO add bounds check here as assertion
                 for parent in q.parents:
                     if parent in visited:
                         continue
@@ -296,15 +288,15 @@ class dfcaMinimizer:
     def calc_S(self):
         # step 1
         self.calc_D()
-        self.state_to_i_in_D: dict[tuple[int, int], int] = {}
+        self.state_to_i_in_D: dict[TupleState, int] = {}
         for i in range(len(self.D)):
             for state in self.D[i]:
                 self.state_to_i_in_D[state] = i - 1
 
-        self.S: dict[tuple[int, int], set[TupleState]] = {}
+        self.S: dict[TupleState, set[TupleState]] = {}
         # step 2z (I made this one up)
-        for t in self.tuple_to_state:
-            self.S[t] = set([self.tuple_to_state[t]])
+        for q in self.allstates:
+            self.S[q] = set([q])
         # step 2a
         for i in range(self.l+1):
             tid1 = (self.n-1, i)
@@ -314,7 +306,7 @@ class dfcaMinimizer:
                 tid2 = (self.n-1, j)
                 if tid2 not in self.tuple_to_state:
                     continue
-                self.update_similarity(tid1, tid2)
+                self.update_similarity(self.tuple_to_state[tid1], self.tuple_to_state[tid2])
         # step 2b
         for i in range(self.l+1):
             tid = (self.n - 1, self.l + 1 - i)
@@ -324,19 +316,19 @@ class dfcaMinimizer:
                 for alpha in self.D[j + 1]: # careful! off by one error if not adding 1
                     if alpha == tid:
                         continue
-                    self.update_similarity(alpha, tid)
+                    self.update_similarity(alpha, self.tuple_to_state[tid])
         # step 3
-        lists: list[list[tuple[int, int]]] = [[] for _ in range(self.l + 2)]
+        lists: list[list[TupleState]] = [[] for _ in range(self.l + 2)]
         # step 4
         for alpha in reversed(self.states_ordered()):
-            if alpha[0] == self.n - 1:
+            if alpha.id[0] == self.n - 1:
                 continue
             i = self.state_to_i_in_D[alpha]
             for beta in lists[i + 1]:
                 similar = True
                 for char in self.alphabet:
-                    beta_n = self.tuple_to_state[beta].next(char).id
-                    alpha_n = self.tuple_to_state[alpha].next(char).id
+                    beta_n = beta.next(char)
+                    alpha_n = alpha.next(char)
                     if not self.similar(beta_n, alpha_n):
                         similar = False
                         break
@@ -352,56 +344,54 @@ class dfcaMinimizer:
     def minimize(self):
         S = self.calc_S()
         i = 0
-        q = [(0, 0)]
+        q = [self.initial]
         T = {t: None for t in self.states_ordered()}
         while True:
             for state in self.S[q[-1]]:
-                if state.id in T:
-                    del T[state.id]
+                if state in T:
+                    del T[state]
             if len(T) == 0:
                 break
             i += 1
             q_i = next(iter(T))
             q.append(q_i)
         m = i
-        self.allstates = set(map(lambda x: self.tuple_to_state[x], q))
+        self.allstates = set(q)
         for state in set(self.finalstates):
             if state not in self.allstates:
                 self.finalstates.remove(state)
         for q_i in q:
             for char in self.alphabet:
-                q_i_state = self.tuple_to_state[q_i]
-                successor = q_i_state.next(char)
-                if char in q_i_state.succ:
-                    del q_i_state.succ[char]
+                successor = q_i.next(char)
+                if char in q_i.succ:
+                    del q_i.succ[char]
                 for j in range(m + 1):
                     if successor in self.S[q[j]]:
-                        q_i_state.add_succ(char, self.tuple_to_state[q[j]])
+                        q_i.add_succ(char, q[j])
                         break
 
-    def update_similarity(self, tid1: tuple[int, int], tid2: tuple[int, int]):
-        if less(tid1, tid2) or tid1 == tid2:
-            if tid1 in self.S:
-                self.S[tid1].add(self.tuple_to_state[tid2])
+    def update_similarity(self, state1: TupleState, state2: TupleState):
+        if less(state1.id, state2.id) or state1 == state2:
+            if state1 in self.S:
+                self.S[state1].add(state2)
             else:
-                self.S[tid1] = set([self.tuple_to_state[tid2]])
-        if less(tid2, tid1) or tid2 == tid1:
-            if tid2 in self.S:
-                self.S[tid2].add(self.tuple_to_state[tid1])
+                self.S[state1] = set([state2])
+        if less(state2.id, state1.id) or state2 == state1:
+            if state2 in self.S:
+                self.S[state2].add(state1)
             else:
-                self.S[tid2] = set([self.tuple_to_state[tid1]])
+                self.S[state2] = set([state1])
 
-    def similar(self, tid1: tuple[int, int], tid2: tuple[int, int]):
-        if tid1 == tid2: return True
-        if less(tid1, tid2):
-            return self.tuple_to_state[tid2] in self.S[tid1]
-        return self.tuple_to_state[tid1] in self.S[tid2]
+    def similar(self, state1: TupleState, state2: TupleState):
+        if state1 == state2: return True
+        if less(state1.id, state2.id):
+            return state2 in self.S[state1]
+        return state1 in self.S[state2]
 
     def states_ordered(self):
-        # This is stupid, but I have slept too little to make this less janky
         def swap(t: tuple[int, int]):
             return (t[1], t[0])
-        return list(map(swap, sorted(map(swap, self.tuple_to_state)))) # sort the states in the order definied by the paper
+        return list(sorted(self.allstates, key=lambda x: swap(x.id))) # sort the states in the order definied by the paper
 
 
 def less(tup1: tuple[int, int], tup2: tuple[int, int]):
@@ -469,7 +459,6 @@ def randomized(**kwargs):
 
 def from_directory(directory: str, **kwargs):
     print(f"TODO from_directory({directory, kwargs})")
-    pass
 
 def from_args(arg: list[str], **kwargs):
     output_path: str | None = kwargs["outputlocation"]
@@ -486,10 +475,8 @@ def run_algos(lang: set[str], output_path: Path | None, visualize: bool =False) 
     dfcaMin = dfcaMinimizer()
     dfcaMin.from_lang(lang)
     dfcaMin.minimize()
-    dfcaMin.visualize()
     dfca = DFCA()
     dfca.from_minimizer(dfcaMin)
-    dfca.visualize()
     l_revuz = dfa.lang()
     states_dfca = len(dfca.allstates)
     l_dfca = frozenset(dfca.decode())
