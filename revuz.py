@@ -51,7 +51,7 @@ class DFA:
 
     def from_lang(self, language: set[tuple[int, ...]] | set[str]):
         """generates the prefix-tree of a given language"""
-        if isinstance(next(iter(language)), str):
+        if language and isinstance(next(iter(language)), str):
             language = cast(set[str], language)
             old_lang: set[str] = language
             language = set([tuple(map(ord, w)) for w in old_lang])
@@ -105,8 +105,8 @@ class DFA:
                 partition[s.height].add(s)
         return partition
 
-    def visualize(self):
-        dot = Digraph(engine="fdp")
+    def visualize(self, name: str = "DFA", directory: str = "graphs"):
+        dot = Digraph(engine="fdp", name=name, directory=directory)
         dot.graph_attr["maxiter"] = "100"
         for state in self.allstates:
             iden = str(state.id)

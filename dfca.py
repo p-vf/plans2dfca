@@ -3,6 +3,7 @@ from revuz import DFA, State, group_str
 from pathlib import Path
 from collections import deque
 from typing import cast
+import math
 import os
 
 class TupleState:
@@ -95,12 +96,13 @@ class DFCA:
             if tuplestate in minimizer.finalstates:
                 self.finalstates.add(new_state)
             visited.add(tuplestate)
+        if sentinel not in visited:
+            self.allstates.remove(sentinel)
 
         self.initial = tuple_state_to_state[minimizer.initial]
         self.l = minimizer.l
 
         self.alphabet = minimizer.alphabet
-
 
         # this is needed to decode this dfca efficiently
         for tuplestate in minimizer.state_to_i_in_D:
@@ -109,8 +111,8 @@ class DFCA:
             state = tuple_state_to_state[tuplestate]
             self.min_length_to_final[state] = minimizer.state_to_i_in_D[tuplestate]
 
-    def visualize(self):
-        dot = Digraph(engine="fdp")
+    def visualize(self, name: str = "DFCA", directory: str = "graphs"):
+        dot = Digraph(engine="fdp", name=name, directory=directory)
         dot.graph_attr["maxiter"] = "100"
         for state in self.allstates:
             iden = str(state.id)
@@ -129,6 +131,7 @@ class DFCA:
         dot.render(view=True)
 
     def to_file(self, filename: Path, source: Path | None = None):
+        # TODO implement correct json output
         print(f"saving dfca to files starting with \"{filename}\"")
         filename.mkdir(parents=True, exist_ok=True)
         with open(filename/"dfca.json", "w") as f:
@@ -253,9 +256,8 @@ class dfcaMinimizer:
         traverse(self.initial, ())
         return res
 
-
-    def visualize(self):
-        dot = Digraph(engine="fdp")
+    def visualize(self, name: str = "DFCA-Minimizer", directory: str = "graphs"):
+        dot = Digraph(engine="fdp", name=name, directory=directory)
         dot.graph_attr["maxiter"] = "100"
         for state in self.allstates:
             iden = str(state)
@@ -276,7 +278,7 @@ class dfcaMinimizer:
     def calc_D(self) -> list[set[TupleState]]:
         current_states: set[TupleState] = set(self.finalstates)
         dist_to_final = 0
-        self.D = [set() for _ in range(self.l + 2)]
+        self.D: list[set[TupleState]] = [set() for _ in range(self.l + 2)]
         visited: set[TupleState] = set()
         while len(current_states) > 0:
             next_states = set()
@@ -294,7 +296,7 @@ class dfcaMinimizer:
             current_states = set(next_states)
             dist_to_final += 1
 
-        self.D[0] = set(map(lambda x: x.id, self.sentinels)) # D_(-1)
+        self.D[0] = set(map(lambda x: x, self.sentinels)) # D_(-1)
 
         return self.D
 
@@ -367,7 +369,8 @@ class dfcaMinimizer:
             q_i = next(iter(T))
             q.append(q_i)
             x.append(self.min_word_to_set(self.S[q_i]))
-        print(f"maximal dissimilar sequence: {x}")
+        if verbose:
+            print(f"maximal dissimilar sequence: {x}")
         m = i
         self.allstates = set(q)
         for state in set(self.finalstates):
@@ -400,13 +403,16 @@ class dfcaMinimizer:
             chars = set(self.alphabet)
             for char in curr_state.succ:
                 succ = curr_state.succ[char]
-                curr_states.appendleft(succ)
                 chars.remove(char)
                 if succ in self.min_word_to and len(self.min_word_to[succ]) <= len(prefix):
                     continue
+                curr_states.appendleft(succ)
                 word = prefix + (char,)
                 update_minimal_word_for(succ, word)
             if chars:
+                if curr_state.sentinel in self.min_word_to and len(self.min_word_to[curr_state.sentinel]) <= len(prefix):
+                    continue
+                curr_states.appendleft(curr_state.sentinel)
                 update_minimal_word_for(curr_state.sentinel, prefix + (min(chars),))
 
     def min_word_to_set(self, states: set[TupleState]) -> tuple[int, ...]:
@@ -478,7 +484,7 @@ def str_lang_to_int_lang(lang: set[str]):
     return res
 
 def lang_to_int_lang(lang: set[str] | set[tuple[int, ...]]):
-    if isinstance(next(iter(lang)), str):
+    if lang and isinstance(next(iter(lang)), str):
         lang = cast(set[str], lang)
         return str_lang_to_int_lang(lang)
     return lang
@@ -499,19 +505,22 @@ def randomized(**kwargs):
     num_states_dfca = 0
     num_states_prefixtree = 0
     num_langs = 0
+    minlen = 0
+    maxlen = 20
+    minsize = 0
+    maxsize = 100
+    # uniform word-lengths between minlen and maxlen
     for i in range(100):
         l = set()
-        for _ in range(random.randint(50, 100)):
-            wordlen = random.randint(5, 10)
+        for _ in range(random.randint(minsize, maxsize)):
+            wordlen = random.randint(minlen, maxlen)
             word = ""
             for _ in range(wordlen):
                 word += alphabet[random.randint(0, len(alphabet) - 1)]
             l.add(word)
-        # l = {'baa', '', 'baaba', 'bbbbb'}
-        # l = {'a', 'b', 'ab', 'aab'}
-        # l = {'', 'ab', 'abab', 'ababab', 'ababa'}
-        print("=== Case begin ===")
-        print(f"language: {l}")
+        if verbose:
+            print("=== Case begin ===")
+            print(f"language: {l}")
         res = run_algos(l, str(output_path / f"rand_test_{i}") if output_path else None, visualize=visualize)
         if res:
             states_prefixtree, states_dfa, states_dfca = res
@@ -520,6 +529,42 @@ def randomized(**kwargs):
             num_states_dfca += states_dfca
 
         num_langs += 1
+    print("Results uniformly distributed word length:")
+    print("object      | avg number of states")
+    print(f"Prefix-Tree | {num_states_prefixtree/num_langs:3.1f}")
+    print(f"min. DFA    | {num_states_dfa/num_langs:3.1f}")
+    print(f"min. DFCA   | {num_states_dfca/num_langs:3.1f}")
+
+    num_states_dfa = 0
+    num_states_dfca = 0
+    num_states_prefixtree = 0
+    num_langs = 0
+    # length is not uniformely distributed: more long words, fewer short ones
+    exponent = 7
+    max_tries_factor = 2 ** exponent
+    for i in range(100):
+        l = set()
+        size = random.randint(minsize, maxsize)
+        tries = 0
+        while len(l) < size and not tries > max_tries_factor * size:
+            wordlen = int(math.pow(random.random() * math.pow(maxlen - minlen, exponent), 1/exponent)) + minlen
+            word = ""
+            for _ in range(wordlen):
+                word += alphabet[random.randint(0, len(alphabet) - 1)]
+            l.add(word)
+            tries += 1
+        if verbose:
+            print("=== Case begin ===")
+            print(f"language: {l}")
+        res = run_algos(l, str(output_path / f"rand_test_{i}") if output_path else None, visualize=visualize)
+        if res:
+            states_prefixtree, states_dfa, states_dfca = res
+            num_states_prefixtree += states_prefixtree
+            num_states_dfa += states_dfa
+            num_states_dfca += states_dfca
+
+        num_langs += 1
+    print("Results non-uniformly distributed word length:")
     print("object      | avg number of states")
     print(f"Prefix-Tree | {num_states_prefixtree/num_langs:3.1f}")
     print(f"min. DFA    | {num_states_dfa/num_langs:3.1f}")
@@ -557,11 +602,11 @@ def run_algos(lang: set[str] | set[tuple[int, ...]], output_path: str | None, vi
     dfa = DFA()
     dfa.from_lang(lang)
     states_prefixtree = len(dfa.allstates)
-    print(f"number of states in prefix tree: {states_prefixtree}")
+    if verbose: print(f"number of states in prefix tree: {states_prefixtree}")
     dfa.revuz()
     l_revuz = dfa.lang()
     states_dfa = len(dfa.allstates)
-    print(f"number of states in minimal DFA: {states_dfa}")
+    if verbose: print(f"number of states in minimal DFA: {states_dfa}")
     dfcaMin = dfcaMinimizer()
     dfcaMin.from_lang(lang)
     dfcaMin.minimize()
@@ -569,12 +614,13 @@ def run_algos(lang: set[str] | set[tuple[int, ...]], output_path: str | None, vi
     dfca.from_minimizer(dfcaMin)
     l_revuz = dfa.lang()
     states_dfca = len(dfca.allstates)
-    print(f"number of states in minimal DFCA: {states_dfca}")
+    if verbose: print(f"number of states in minimal DFCA: {states_dfca}")
     l_dfca = frozenset(dfca.decode())
     expected = frozenset(lang_to_int_lang(lang))
     if l_dfca != expected:
         print(f"error: decoding the dfca of language l = {expected} did not result in l, resulted in {l_dfca} (DFCA)")
         dfca.visualize()
+        dfcaMin.visualize()
     if l_revuz != expected:
         print(f"error: decoding the dfca of language l = {expected} did not result in l, resulted in {l_revuz} (DFA)")
         dfa.visualize()
@@ -590,10 +636,11 @@ def run_algos(lang: set[str] | set[tuple[int, ...]], output_path: str | None, vi
         input("For the visualized DF(C)As, the minimal DFA is smaller than the corresponding \"minimal\" DFCA..")
     elif visualize:
         dfa.visualize()
+        dfcaMin.visualize()
         dfca.visualize()
     return states_prefixtree, states_dfa, states_dfca
 
-
+verbose = False
 def main():
     from argparse import ArgumentParser, BooleanOptionalAction
     parser = ArgumentParser()
@@ -608,7 +655,12 @@ def main():
     parser_arg.set_defaults(func=from_args)
     parser.add_argument("-o", "--outputlocation", type=str)
     parser.add_argument("-v", "--visualize", action=BooleanOptionalAction, default=False)
+    parser.add_argument("-V", "--verbose", action=BooleanOptionalAction, default=False)
     args = parser.parse_args()
+    # TODO this (global variable) is not very elegant but maybe okay..
+    global verbose
+    verbose = args.verbose
+
     args.func(**vars(args))
 
 if __name__ == "__main__":
