@@ -53,9 +53,9 @@ class DFCA:
         self.allstates: set[State] = set()
         self.finalstates: set[State] = set()
 
-        # Mapping from state to the minimal distance to the initial state
+        # Mapping from state to the minimal length of a word that leads to a final state
         # Required for efficiently decoding the language that this DFCA represents
-        self.min_dist_to_initial: dict[State, int] = {}
+        self.min_length_to_final: dict[State, int] = {}
 
     def from_lang(self, lang: set[tuple[int, ...]]):
         minimizer = dfcaMinimizer()
@@ -107,7 +107,7 @@ class DFCA:
             if tuplestate not in tuple_state_to_state:
                 continue
             state = tuple_state_to_state[tuplestate]
-            self.min_dist_to_initial[state] = minimizer.state_to_i_in_D[tuplestate]
+            self.min_length_to_final[state] = minimizer.state_to_i_in_D[tuplestate]
 
     def visualize(self):
         dot = Digraph(engine="fdp")
@@ -130,7 +130,8 @@ class DFCA:
 
     def to_file(self, filename: Path, source: Path | None = None):
         print(f"saving dfca to files starting with \"{filename}\"")
-        with open(filename.with_suffix(".dfca"), "w") as f:
+        filename.mkdir(parents=True, exist_ok=True)
+        with open(filename/"dfca.json", "w") as f:
             transition_func: list[tuple] = []
             for state in self.allstates:
                 for char in self.alphabet:
@@ -141,7 +142,7 @@ class DFCA:
                 str(self.l) + "\n",
                 ",".join(map(lambda x: str(x.id), self.allstates)) + "\n",
                 ",".join(map(str, transition_func)) + "\n"])
-        with open(filename.with_suffix(".source"), "w") as f:
+        with open(filename/"source.json", "w") as f:
             if source is None:
                 f.writelines(map(lambda x: ",".join(map(str, x)) + "\n", self.decode()))
             else:
@@ -154,7 +155,7 @@ class DFCA:
 
         while stack:
             state, prefix = stack.pop()
-            min_dist = self.min_dist_to_initial[state]
+            min_dist = self.min_length_to_final[state]
             if min_dist == -1:
                 continue
             assert (state in self.finalstates) == (min_dist == 0)
@@ -174,6 +175,7 @@ class dfcaMinimizer:
         self.D = []
         self.state_to_i_in_D = {}
         self.alphabet: list[int] = []
+        self.min_word_to: dict[TupleState, tuple[int, ...]] = {}
 
     def from_lang(self, language: set[tuple[int, ...]] | set[str]):
         dfa = DFA()
@@ -199,9 +201,9 @@ class dfcaMinimizer:
         # mapping from state to a set of its parents and its depth
         curr_states: list[tuple[State, tuple[TupleState, int] | None, int]] = [(dfa.initial, None, 0)]
         while curr_states:
-            initial, parent_or_none, depth = curr_states.pop()
+            curr_state, parent_or_none, depth = curr_states.pop()
 
-            sid = (initial.id, depth)
+            sid = (curr_state.id, depth)
             if sid in self.tuple_to_state:
                 newstate = self.tuple_to_state[sid]
             else:
@@ -213,17 +215,17 @@ class dfcaMinimizer:
                 newstate.add_parent(parent, char)
                 parent.add_succ(char, newstate)
 
-            if initial in dfa.finalstates:
+            if curr_state in dfa.finalstates:
                 self.finalstates.add(newstate)
             chars = set(self.alphabet)
-            for char in initial.succ:
+            for char in curr_state.succ:
                 chars.remove(char)
-                succ = initial.succ[char]
+                succ = curr_state.succ[char]
                 curr_states.append((succ, (newstate, char), depth + 1))
             if chars:
                 minimal_sentinel_touched = min(minimal_sentinel_touched, depth)
 
-        print(f"{minimal_sentinel_touched = }")
+        # print(f"{minimal_sentinel_touched = }")
 
         # cleanup unreachable sentinel states
         for i in range(minimal_sentinel_touched):
@@ -354,6 +356,7 @@ class dfcaMinimizer:
         i = 0
         q = [self.initial]
         T = {t: None for t in self.states_ordered()}
+        x: list[tuple[int, ...]] = [()]
         while True:
             for state in self.S[q[-1]]:
                 if state in T:
@@ -363,6 +366,8 @@ class dfcaMinimizer:
             i += 1
             q_i = next(iter(T))
             q.append(q_i)
+            x.append(self.min_word_to_set(self.S[q_i]))
+        print(f"maximal dissimilar sequence: {x}")
         m = i
         self.allstates = set(q)
         for state in set(self.finalstates):
@@ -377,6 +382,42 @@ class dfcaMinimizer:
                     if successor in self.S[q[j]]:
                         q_i.add_succ(char, q[j])
                         break
+
+    def gen_min_words(self):
+        curr_states = deque([self.initial])
+
+        self.min_word_to[self.initial] = ()
+
+        def update_minimal_word_for(state, word):
+            if state in self.min_word_to:
+                self.min_word_to[state] = pseudolexicographical_min(word, self.min_word_to[state])
+            else:
+                self.min_word_to[state] = word
+
+        while curr_states:
+            curr_state = curr_states.pop()
+            prefix = self.min_word_to[curr_state]
+            chars = set(self.alphabet)
+            for char in curr_state.succ:
+                succ = curr_state.succ[char]
+                curr_states.appendleft(succ)
+                chars.remove(char)
+                if succ in self.min_word_to and len(self.min_word_to[succ]) <= len(prefix):
+                    continue
+                word = prefix + (char,)
+                update_minimal_word_for(succ, word)
+            if chars:
+                update_minimal_word_for(curr_state.sentinel, prefix + (min(chars),))
+
+    def min_word_to_set(self, states: set[TupleState]) -> tuple[int, ...]:
+        assert len(states) >= 1
+        if not self.min_word_to:
+            self.gen_min_words()
+        states_iter = iter(states)
+        min_word = self.min_word_to[next(states_iter)]
+        for state in states_iter:
+            min_word = pseudolexicographical_min(self.min_word_to[state], min_word)
+        return min_word
 
     def update_similarity(self, state1: TupleState, state2: TupleState):
         if less(state1.id, state2.id) or state1 == state2:
@@ -401,6 +442,19 @@ class dfcaMinimizer:
             return (t[1], t[0])
         return list(sorted(self.allstates, key=lambda x: swap(x.id))) # sort the states in the order definied by the paper
 
+def pseudolexicographical_min(word1: tuple[int, ...], word2: tuple[int, ...]):
+    if len(word1) > len(word2):
+        return word2
+    if len(word2) > len(word1):
+        return word1
+    # len(word1) == len(word2)
+    for i in range(len(word1)):
+        if word1[i] > word2[i]:
+            return word2
+        if word2[i] > word1[i]:
+            return word1
+    # word1 == word2
+    return word1
 
 def less(tup1: tuple[int, int], tup2: tuple[int, int]):
     return tup1[1] <= tup2[1] if tup1[1] != tup2[1] else tup1[0] <= tup2[0]
@@ -422,6 +476,12 @@ def str_lang_to_int_lang(lang: set[str]):
             new_w += (ord(char),)
         res.add(new_w)
     return res
+
+def lang_to_int_lang(lang: set[str] | set[tuple[int, ...]]):
+    if isinstance(next(iter(lang)), str):
+        lang = cast(set[str], lang)
+        return str_lang_to_int_lang(lang)
+    return lang
 
 def randomized(**kwargs):
     output: str | None = kwargs["outputlocation"]
@@ -497,6 +557,7 @@ def run_algos(lang: set[str] | set[tuple[int, ...]], output_path: str | None, vi
     dfa = DFA()
     dfa.from_lang(lang)
     states_prefixtree = len(dfa.allstates)
+    print(f"number of states in prefix tree: {states_prefixtree}")
     dfa.revuz()
     l_revuz = dfa.lang()
     states_dfa = len(dfa.allstates)
@@ -510,11 +571,7 @@ def run_algos(lang: set[str] | set[tuple[int, ...]], output_path: str | None, vi
     states_dfca = len(dfca.allstates)
     print(f"number of states in minimal DFCA: {states_dfca}")
     l_dfca = frozenset(dfca.decode())
-    if isinstance(next(iter(lang)), str):
-        lang = cast(set[str], lang)
-        expected = frozenset(str_lang_to_int_lang(lang))
-    else:
-        expected = frozenset(lang)
+    expected = frozenset(lang_to_int_lang(lang))
     if l_dfca != expected:
         print(f"error: decoding the dfca of language l = {expected} did not result in l, resulted in {l_dfca} (DFCA)")
         dfca.visualize()
