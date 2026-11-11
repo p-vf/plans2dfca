@@ -86,14 +86,19 @@ class DFA:
         #   (adding the state to the correct partition instead of setting a
         #   member variable)
         maxheight = -1
-        def traverse_height(state: "State", height: int):
-            nonlocal maxheight
-            state.set_height(height)
-            maxheight = max(height, maxheight)
-            for p in state.parents:
-                traverse_height(p, height + 1)
-        for s in self.finalstates:
-            traverse_height(s, 0)
+        height = 0
+        next_states = set(self.finalstates)
+        while next_states:
+            curr_states = next_states
+            next_states = set()
+            while curr_states:
+                state = curr_states.pop()
+                state.height = max(state.height, height)
+                maxheight = max(state.height, maxheight)
+                for parent in state.parents:
+                    next_states.add(parent)
+            height += 1
+
         partition = [set() for _ in range(maxheight + 1)]
         for s in self.allstates:
             if s.height >= 0:
@@ -101,7 +106,8 @@ class DFA:
         return partition
 
     def visualize(self):
-        dot = Digraph()
+        dot = Digraph(engine="fdp")
+        dot.graph_attr["maxiter"] = "100"
         for state in self.allstates:
             iden = str(state.id)
             dot.node(iden, iden, peripheries="2" if state in self.finalstates else "1")
@@ -111,16 +117,17 @@ class DFA:
                 dot.edge(iden, str(state.succ[char].id), str(char))
         dot.render(view=True)
 
-    def lang(self, initial: State | None = None, prefix: tuple[int, ...] = ()) -> set[tuple[int, ...]]:
+    def lang(self):
         # NOTE: if there is a cycle in the dfa, this function does not terminate
-        if initial is None:
-            initial = self.initial
+        stack: list[tuple[State, tuple[int, ...]]] = [(self.initial, ())]
         res: set[tuple[int, ...]] = set()
-        if initial in self.finalstates:
-            res.add(prefix)
-        for char in initial.succ:
-            s = self.lang(initial.succ[char], prefix + (char,))
-            res.update(s)
+
+        while stack:
+            state, prefix = stack.pop()
+            if state in self.finalstates:
+                res.add(prefix)
+            for char in state.succ:
+                stack.append((state.succ[char], prefix + (char,)))
         return res
 
     def sort_states(self, states: list[State]):
@@ -162,17 +169,22 @@ class DFA:
                     else:
                         prev_sign, prev_state = n
         # cleanup: we must order the labels of the states by minimal depth
+        # we do this with a breadth-first traversal
         state_depth = {}
-        max_depth = 0
-        def traverse(start: State, depth: int):
-            nonlocal self, state_depth, max_depth
-            if start in state_depth:
-                return
-            state_depth[start] = depth
-            max_depth = max(max_depth, depth)
-            for state in start.succ.values():
-                traverse(state, depth + 1)
-        traverse(self.initial, 0)
+        depth = 0
+        next_states = set([self.initial])
+        while next_states:
+            curr_states = next_states
+            next_states: set[State] = set()
+            while curr_states:
+                state = curr_states.pop()
+                if state in state_depth:
+                    continue
+                state_depth[state] = depth
+                for char in state.succ:
+                    next_states.add(state.succ[char])
+            depth += 1
+        max_depth = depth - 1
 
         states_by_depth = [set() for _ in range(max_depth + 1)]
         for state in state_depth:
@@ -184,6 +196,27 @@ class DFA:
                 state.id = iter
                 iter += 1
         self.sentinel.id = len(self.allstates) - 1
+
+def group_str(chars: set[int]) -> str:
+    num_iter = iter(sorted(chars))
+    start = next(num_iter)
+    ranges: list[tuple[int, int]]= [(start, start)]
+    for i in num_iter:
+        if i != ranges[-1][1] + 1:
+            ranges.append((i,i))
+        else:
+            ranges[-1] = (ranges[-1][0], i)
+    res = ""
+    for i in range(len(ranges)):
+        (s, e) = ranges[i]
+        if s == e:
+            res += str(s)
+        elif s == e - 1:
+            res += str(s) + "," + str(e)
+        else:
+            res += str(s) + ".." + str(e)
+        res += "," if i < len(ranges) else ""
+    return res
 
 def main():
     dfa = DFA()
