@@ -1,0 +1,9 @@
+[project]
+name = "plans2dfca"
+version = "0.1.0"
+description = "Python scripts to convert sets of plans to Deterministic Finite Cover Automata (DFCA)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "graphviz>=0.21",
+]
