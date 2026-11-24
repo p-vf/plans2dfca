@@ -3,6 +3,7 @@
 
 import common_setup
 from common_setup import TopkExperiment
+from common_setup import NumStatesDFCAParser
 import top_k_parser
 
 import os
@@ -36,20 +37,20 @@ else:
         "gripper:prob01.pddl", # prob_<x>.pddl, where x = 01..20
         "sokoban-sat08-strips:p01.pddl", # p<x>.pddl, where x = 01..30
         "quantum-layout-sat23-strips:p01.pddl", # p<x>.pddl, where x = 01..20
+        "cavediving-14-adl:testing01.pddl",
     ]
     ENVIRONMENT = LocalEnvironment(processes=7)
     DRIVER_OPTIONS = ["--overall-time-limit", "100s"]
 
 CONFIGS = []
-for dir in ["bd"]:
+
+# "symk_bd(plan_selection=top_k(num_plans=infinity,write_plans=true),cost_type=one,bound=15,simple=true)"
+for nick, search_option in [("q=1.25_with_loops", f"symq_bd(quality=1.25,plan_selection=top_k(num_plans={NUM_PLANS}))"), ("q=1.25_simple", f"symq_bd(quality=1.25,plan_selection=top_k(num_plans={NUM_PLANS}),simple=true)")]:
     CONFIGS += [
         common_setup.Config(
-            f"sym-{dir}",
+            nick,
             "master",
-            ["--search", f"symq_{dir}(quality=1.0,plan_selection=top_k(num_plans={NUM_PLANS}))"],
-            # mit unit-costs: symk verwenden
-            # - networkx für visualisierung
-
+            ["--search", search_option],
             driver_options=DRIVER_OPTIONS,
         ),
     ]
@@ -68,6 +69,7 @@ exp.add_parser(exp.TRANSLATOR_PARSER)
 exp.add_parser(exp.SINGLE_SEARCH_PARSER)
 exp.add_parser(exp.PLANNER_PARSER)
 exp.add_parser(top_k_parser.get_parser())
+exp.add_parser(NumStatesDFCAParser())
 
 ATTRIBUTES = TopkExperiment.DEFAULT_TABLE_ATTRIBUTES + [
     "plan_costs",
@@ -79,6 +81,7 @@ ATTRIBUTES = TopkExperiment.DEFAULT_TABLE_ATTRIBUTES + [
 
 exp.add_step("build", exp.build)
 exp.add_step("start", exp.start_runs)
+exp.add_step("construct_dfca", exp.construct_dfca)
 exp.add_step("parse", exp.parse)
 exp.add_fetcher(name="fetch")
 exp.add_step("validate_plans", exp.validate_plans)
@@ -87,5 +90,6 @@ exp.add_report(
     outfile="topk-report.html",
 )
 exp.add_step("create_k_coverage", exp.create_k_coverage_plot, NUM_PLANS)
+exp.add_step("create_num_states_scatterplot", exp.create_num_states_scatterplot)
 
 exp.run_steps()

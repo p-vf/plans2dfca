@@ -111,9 +111,8 @@ class DFCA:
             state = tuple_state_to_state[tuplestate]
             self.min_length_to_final[state] = minimizer.state_to_i_in_D[tuplestate]
 
-    def visualize(self, name: str = "DFCA", directory: str = "graphs"):
-        dot = Digraph(engine="fdp", name=name, directory=directory)
-        dot.graph_attr["maxiter"] = "100"
+    def to_graph(self):
+        dot = Digraph()
         for state in self.allstates:
             iden = str(state.id)
             dot.node(iden, iden, peripheries="2" if state in self.finalstates else "1")
@@ -128,28 +127,23 @@ class DFCA:
                     mapping[succ] = set([char])
             for succ in mapping:
                 dot.edge(str(state.id), str(succ.id), group_str(mapping[succ]), _attributes={"decorate":"True", "labelfloat":"True"})
+        return dot
+
+    def visualize(self, name: str = "DFCA", directory: str = "graphs"):
+        dot = self.to_graph()
+        dot.name = name
+        dot.directory = directory
+        dot.engine = "fdp"
+        dot.graph_attr["maxiter"] = "100"
         dot.render(view=True)
 
-    def to_file(self, filename: Path, source: Path | None = None):
-        # TODO implement correct json output
-        print(f"saving dfca to files starting with \"{filename}\"")
-        filename.mkdir(parents=True, exist_ok=True)
-        with open(filename/"dfca.json", "w") as f:
-            transition_func: list[tuple] = []
-            for state in self.allstates:
-                for char in self.alphabet:
-                    next_tuple = state.next(char).id
-                    transition_func.append((state.id, char, next_tuple))
-            f.writelines([
-                "DFCA\n",
-                str(self.l) + "\n",
-                ",".join(map(lambda x: str(x.id), self.allstates)) + "\n",
-                ",".join(map(str, transition_func)) + "\n"])
-        with open(filename/"source.json", "w") as f:
-            if source is None:
-                f.writelines(map(lambda x: ",".join(map(str, x)) + "\n", self.decode()))
-            else:
-                print("TODO case when source defined for to_file()")
+    def to_dot_file(self, directory: Path):
+        """Saves DFCA as a graphviz file to directory `directory` with name `dfca.dot`"""
+        directory.mkdir(parents=True, exist_ok=True)
+        filename = "dfca.dot"
+        print(f"saving dfca to dot-file \"{directory/filename}\"")
+        dot = self.to_graph()
+        dot.save(filename=filename, directory=directory)
 
     def decode(self) -> set[tuple[int, ...]]:
         res: set[tuple[int, ...]] = set()
@@ -521,7 +515,9 @@ def randomized(**kwargs):
         if verbose:
             print("=== Case begin ===")
             print(f"language: {l}")
-        res = run_algos(l, str(output_path / f"rand_test_{i}") if output_path else None, visualize=visualize)
+        new_kwargs = dict(kwargs)
+        new_kwargs["outputlocation"] = str(output_path / f"rand_test_{i}") if output_path else None
+        res = run_algos(l, **new_kwargs)
         if res:
             states_prefixtree, states_dfa, states_dfca = res
             num_states_prefixtree += states_prefixtree
@@ -556,7 +552,9 @@ def randomized(**kwargs):
         if verbose:
             print("=== Case begin ===")
             print(f"language: {l}")
-        res = run_algos(l, str(output_path / f"rand_test_{i}") if output_path else None, visualize=visualize)
+        new_kwargs = dict(kwargs)
+        new_kwargs["outputlocation"] = str(output_path / f"rand_test_{i}") if output_path else None
+        res = run_algos(l, **new_kwargs)
         if res:
             states_prefixtree, states_dfa, states_dfca = res
             num_states_prefixtree += states_prefixtree
@@ -583,6 +581,8 @@ def from_directory(directory: str, **kwargs):
         with open(d/file, "r") as f:
             word: tuple[int, ...] = ()
             for line in f:
+                if line.startswith(";"):
+                    continue
                 if line in line_to_int:
                     char = line_to_int[line]
                 else:
@@ -591,14 +591,24 @@ def from_directory(directory: str, **kwargs):
                     counter += 1
                 word += (char,)
         lang.add(word)
-    run_algos(lang, kwargs["outputlocation"], kwargs["visualize"])
+    run_algos(lang, **kwargs)
 
 def from_args(arg: list[str], **kwargs):
-    output_path: str | None = kwargs["outputlocation"]
-    visualize: bool = kwargs["visualize"]
-    run_algos(set(arg), output_path, visualize=visualize)
+    run_algos(set(arg), **kwargs)
 
-def run_algos(lang: set[str] | set[tuple[int, ...]], output_path: str | None, visualize: bool =False) -> tuple[int, int, int] | None:
+def stats_to_csv(stats: dict[str, int], directory: Path, filename: str):
+    directory.mkdir(parents=True, exist_ok=True)
+    print(f"saving stats to file \"{directory/filename}\"")
+    with open(directory / filename, "w+") as f:
+        for key in stats:
+            f.write(key + "," + str(stats[key]) + "\n")
+
+def run_algos(lang: set[str] | set[tuple[int, ...]], **kwargs) -> tuple[int, int, int] | None:
+    graph_output = kwargs["graph_output"]
+    stats_output = kwargs["stats_output"]
+    outputlocation = kwargs["outputlocation"]
+    visualize = kwargs["visualize"]
+    assert (not graph_output and not visualize) or outputlocation is not None
     dfa = DFA()
     dfa.from_lang(lang)
     states_prefixtree = len(dfa.allstates)
@@ -625,14 +635,22 @@ def run_algos(lang: set[str] | set[tuple[int, ...]], output_path: str | None, vi
         print(f"error: decoding the dfca of language l = {expected} did not result in l, resulted in {l_revuz} (DFA)")
         dfa.visualize()
 
-    if output_path:
-        dfca.to_file(Path(output_path))
+    if graph_output:
+        assert outputlocation
+        dfca.to_dot_file(Path(outputlocation))
+    if stats_output:
+        assert outputlocation
+        stats = {
+            "num_states_prefixtree": states_prefixtree,
+            "num_states_dfa": states_dfa,
+            "num_states_dfca": states_dfca,
+        }
+        stats_to_csv(stats, Path(outputlocation), "num_states.csv")
 
     if states_dfca > states_dfa:
         dfa.visualize()
         dfcaMin.visualize()
         dfca.visualize()
-        dfca.to_file(Path("suspicious.dfca"))
         input("For the visualized DF(C)As, the minimal DFA is smaller than the corresponding \"minimal\" DFCA..")
     elif visualize:
         dfa.visualize()
@@ -654,12 +672,17 @@ def main():
     parser_arg.add_argument("arg", nargs="*")
     parser_arg.set_defaults(func=from_args)
     parser.add_argument("-o", "--outputlocation", type=str)
+    parser.add_argument("-g", "--graph-output", action=BooleanOptionalAction, default=False)
+    parser.add_argument("-s", "--stats-output", action=BooleanOptionalAction, default=False)
     parser.add_argument("-v", "--visualize", action=BooleanOptionalAction, default=False)
     parser.add_argument("-V", "--verbose", action=BooleanOptionalAction, default=False)
     args = parser.parse_args()
     # TODO this (global variable) is not very elegant but maybe okay..
     global verbose
     verbose = args.verbose
+    if not args.outputlocation and (args.graph_output or args.stats_output):
+        print("if one of --stats-output or --graph_output is true, --outputlocation has to be specified")
+        exit(1)
 
     args.func(**vars(args))
 

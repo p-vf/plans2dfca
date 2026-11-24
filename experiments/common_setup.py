@@ -5,9 +5,13 @@ import os
 import platform
 import sys
 import re
+from pathlib import Path
+import subprocess
+import adjustText
 
 from lab.experiment import ARGPARSER
 from lab import tools
+from lab.parser import Parser
 
 import matplotlib.pyplot as plt
 
@@ -294,9 +298,9 @@ class TopkExperiment(FastDownwardExperiment):
                     "plan_list",
                     ["{top_k_validator}", "{domain}", "{problem}", "found_plans/"],
                 )
-                # fd_run.add_command(
-                #     "zip_plans", ["zip", "-r", "found_plans.zip", "found_plans/"]
-                # )
+                fd_run.add_command(
+                    "zip_plans", ["zip", "-r", "found_plans.zip", "found_plans/"]
+                )
                 # fd_run.add_command("rm_plans", ["rm", "-r", "found_plans/"])
                 self.add_run(fd_run)
 
@@ -309,6 +313,19 @@ class TopkExperiment(FastDownwardExperiment):
         if cls._is_portfolio(config_nick):
             return [attr for attr in attributes if attr in cls.PORTFOLIO_ATTRIBUTES]
         return attributes
+
+    def construct_dfca(self):
+        for directory in Path(self.path).glob("runs-*-*/*/found_plans"):
+            run_dir = directory.parent
+            subprocess.check_call(
+                ["uv", "--directory", run_dir, "run", "../../../../../dfca.py", "-o", ".", "-g", "-s", "from-directory", "found_plans/"]
+            )
+            subprocess.check_call(
+                ["uv", "--directory", run_dir, "run", "../../../../visualize.py", "dfca.dot"]
+            )
+            subprocess.check_call(
+                ["uv", "--directory", run_dir, "run", "../../../../calc_file_sizes.py", "found_plans", "found_plans.zip"]
+            )
 
     def validate_plans(self):
         issues = False
@@ -373,6 +390,57 @@ class TopkExperiment(FastDownwardExperiment):
         plt.legend()
         fig.savefig(os.path.join(self.eval_dir, "k_coverage.png"))
 
+    def create_num_states_scatterplot(
+        self, filter_algorithm=None, outfile="num_states_scatterplot.png"
+    ):
+        assert os.path.exists(os.path.join(self.eval_dir, "properties"))
+        with open(os.path.join(self.eval_dir, "properties"), "r") as f:
+            props = json.load(f)
+        option_to_data: dict[str, dict[str, tuple[int | float, int | float]]] = dict()
+        for key in props:
+            cur_data = props[key]
+            if filter_algorithm is None or cur_data["algorithm"] in filter_algorithm:
+                nick = cur_data["algorithm"]
+                if nick not in option_to_data:
+                    option_to_data[nick] = {}
+                # We currently only take a look at the number of states in a dfca compared to the zip compression ratio
+                option_to_data[nick][key] = (cur_data["num_states_dfca"], cur_data["num_plans"])
+
+        fig, axs = plt.subplots(ncols=len(option_to_data), figsize=(20, 10), dpi=80)
+        for nick, ax in zip(option_to_data, axs):
+            data = option_to_data[nick]
+            xy_points = [data[a] for a in data]
+            x, y = zip(*xy_points)
+            ax.scatter(x, y)
+
+            texts = []
+            for i, label in enumerate(data):
+                text = label.removeprefix(nick)
+                text = text[1:text.rfind(".")]
+                texts.append(ax.text(x[i], y[i], text, ha="center", va="center"))
+
+
+            ax.set_xlim(left=0)
+            ax.set_ylim(bottom=0)
+            ax.set_xlabel("# States in Minimal DFCA")
+            ax.set_ylabel("# Plans")
+            ax.set_title(nick)
+            ax.margins(0.05) # Optional, just adds 5% padding to the autoscaling
+            adjustText.adjust_text(texts, ax=ax)
+        fig.savefig(os.path.join(self.eval_dir, outfile))
+
+
+def parse_csv(content, props):
+    assert isinstance(content, str)
+    assert isinstance(props, tools.Properties)
+    for line in content.splitlines():
+        name, value = line.split(",")
+        props[name] = int(value)
+
+class NumStatesDFCAParser(Parser):
+    def __init__(self):
+        super().__init__()
+        self.add_function(parse_csv, file="num_states.csv")
 
 def get_k_coverage(run, num_requested_plans):
     if run["found_plans"] >= num_requested_plans:
