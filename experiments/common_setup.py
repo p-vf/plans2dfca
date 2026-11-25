@@ -404,9 +404,10 @@ class TopkExperiment(FastDownwardExperiment):
                 if nick not in option_to_data:
                     option_to_data[nick] = {}
                 # We currently only take a look at the number of states in a dfca compared to the zip compression ratio
-                option_to_data[nick][key] = (cur_data["num_states_dfca"], cur_data["num_plans"])
+                option_to_data[nick][key] = (cur_data["num_states_dfca"], cur_data["num_states_dfa"])
 
-        fig, axs = plt.subplots(ncols=len(option_to_data), figsize=(20, 10), dpi=80)
+        num_figs = len(option_to_data)
+        fig, axs = plt.subplots(ncols=num_figs, figsize=(10*num_figs, 10), dpi=80)
         for nick, ax in zip(option_to_data, axs):
             data = option_to_data[nick]
             xy_points = [data[a] for a in data]
@@ -423,10 +424,10 @@ class TopkExperiment(FastDownwardExperiment):
             ax.set_xlim(left=0)
             ax.set_ylim(bottom=0)
             ax.set_xlabel("# States in Minimal DFCA")
-            ax.set_ylabel("# Plans")
+            ax.set_ylabel("# States in Minimal DFA")
             ax.set_title(nick)
             ax.margins(0.05) # Optional, just adds 5% padding to the autoscaling
-            adjustText.adjust_text(texts, ax=ax)
+            adjustText.adjust_text(texts, ax=ax, arrowprops=dict(arrowstyle='->'))
         fig.savefig(os.path.join(self.eval_dir, outfile))
 
 

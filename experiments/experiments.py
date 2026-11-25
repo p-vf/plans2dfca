@@ -29,15 +29,15 @@ NUM_PLANS = 1000
 
 if common_setup.is_running_on_cluster():
     SUITE = common_setup.DEFAULT_OPTIMAL_SUITE + common_setup.OPTIMAL_SUITE_ADL
+    NUM_PLANS = 10000
     ENVIRONMENT = BaselSlurmEnvironment(partition="infai_2", memory_per_cpu=f"{CPU_MEMORY}M")
 else:
     # SUITE = common_setup.TopkExperiment.DEFAULT_TEST_SUITE
     SUITE = [
-        "blocks:probBLOCKS-4-0.pddl", # probBLOCKS-<n>-<k>.pddl, where n = 4..17 and k = 0..2
+        "blocks:probBLOCKS-8-1.pddl", # probBLOCKS-<n>-<k>.pddl, where n = 4..17 and k = 0..2
         "gripper:prob01.pddl", # prob_<x>.pddl, where x = 01..20
-        "sokoban-sat08-strips:p01.pddl", # p<x>.pddl, where x = 01..30
-        "quantum-layout-sat23-strips:p01.pddl", # p<x>.pddl, where x = 01..20
-        "cavediving-14-adl:testing01.pddl",
+        "sokoban-opt08-strips:p01.pddl", # p<x>.pddl, where x = 01..30
+        "elevators-opt08-strips:p04.pddl",
     ]
     ENVIRONMENT = LocalEnvironment(processes=7)
     DRIVER_OPTIONS = ["--overall-time-limit", "100s"]
@@ -45,7 +45,11 @@ else:
 CONFIGS = []
 
 # "symk_bd(plan_selection=top_k(num_plans=infinity,write_plans=true),cost_type=one,bound=15,simple=true)"
-for nick, search_option in [("q=1.25_with_loops", f"symq_bd(quality=1.25,plan_selection=top_k(num_plans={NUM_PLANS}))"), ("q=1.25_simple", f"symq_bd(quality=1.25,plan_selection=top_k(num_plans={NUM_PLANS}),simple=true)")]:
+for nick, search_option in {
+        "q=2_with_loops": f"symq_bd(quality=2,plan_selection=top_k(num_plans={NUM_PLANS}))",
+        "q=2_simple":     f"symq_bd(quality=2,plan_selection=top_k(num_plans={NUM_PLANS}),simple=true)",
+        "q=2_unit_cost":  f"symq_bd(quality=2,plan_selection=top_k(num_plans={NUM_PLANS}),cost_type=one)",
+    }.items():
     CONFIGS += [
         common_setup.Config(
             nick,
